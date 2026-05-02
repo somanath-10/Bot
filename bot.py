@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import time
 from datetime import datetime
 from itertools import count
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -25,6 +27,7 @@ seen_messages: Dict[str, int] = {}
 ended_conversations: set[str] = set()
 sent_suppression_keys: set[str] = set()
 conversation_seq = count(1)
+last_tick_actions: List[Dict[str, Any]] = []
 
 
 # Kept for compatibility with the original generator import path.
@@ -60,6 +63,7 @@ async def _parse_json_model(request: Request, model_cls):
 
 
 @app.get("/")
+@app.get("/ui")
 async def root():
     return HTMLResponse(
         """
@@ -68,111 +72,259 @@ async def root():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store">
   <title>Vera Bot Console</title>
   <style>
     :root {
       color-scheme: light;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f6f7f9;
-      color: #172033;
+      background: #eef2f7;
+      color: #182230;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; }
+    body { margin: 0; min-width: 320px; }
     header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
       background: #ffffff;
-      border-bottom: 1px solid #dde2ea;
-      padding: 20px 28px;
+      border-bottom: 1px solid #d8dee8;
+      padding: 18px 22px;
     }
-    h1 { margin: 0 0 4px; font-size: 24px; font-weight: 700; letter-spacing: 0; }
-    .sub { margin: 0; color: #5a6577; font-size: 14px; }
+    h1 { margin: 0; font-size: 23px; font-weight: 750; letter-spacing: 0; }
+    .sub { margin: 4px 0 0; color: #667085; font-size: 13px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      border: 1px solid #cfd7e4;
+      border-radius: 999px;
+      padding: 8px 11px;
+      background: #f8fafc;
+      font-size: 13px;
+      color: #344054;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+    .dot.ok { background: #16a34a; }
+    .dot.bad { background: #dc2626; }
     main {
       display: grid;
-      grid-template-columns: minmax(280px, 420px) minmax(320px, 1fr);
-      gap: 18px;
-      padding: 20px;
-      max-width: 1180px;
+      grid-template-columns: 280px minmax(340px, 1fr) minmax(320px, 440px);
+      gap: 14px;
+      padding: 14px;
+      max-width: 1440px;
       margin: 0 auto;
     }
     section {
       background: #ffffff;
-      border: 1px solid #dde2ea;
+      border: 1px solid #d8dee8;
       border-radius: 8px;
-      padding: 16px;
+      min-width: 0;
     }
-    h2 { margin: 0 0 12px; font-size: 16px; letter-spacing: 0; }
-    .buttons { display: grid; gap: 8px; }
+    .panel { padding: 14px; }
+    h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0; }
+    .stack { display: grid; gap: 8px; }
+    button, select, textarea {
+      font: inherit;
+      letter-spacing: 0;
+    }
     button {
-      border: 1px solid #c9d1dc;
+      border: 1px solid #c9d3df;
       background: #ffffff;
-      color: #172033;
-      padding: 10px 12px;
+      color: #182230;
+      padding: 10px 11px;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 13px;
       cursor: pointer;
       text-align: left;
     }
-    button.primary { background: #1f6feb; border-color: #1f6feb; color: #ffffff; }
-    button:hover { border-color: #1f6feb; }
-    .status {
-      display: flex;
-      align-items: center;
+    button.primary { background: #175cd3; border-color: #175cd3; color: #ffffff; }
+    button.success { background: #067647; border-color: #067647; color: #ffffff; }
+    button:hover { border-color: #175cd3; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
-      padding: 10px 12px;
-      border-radius: 6px;
-      background: #eef6ef;
-      color: #166534;
-      margin-bottom: 12px;
-      font-size: 14px;
+      margin: 12px 0;
     }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
-    pre {
-      min-height: 420px;
+    .stat {
+      border: 1px solid #e0e6ef;
+      border-radius: 6px;
+      padding: 9px;
+      background: #f8fafc;
+    }
+    .label { color: #667085; font-size: 12px; }
+    .value { margin-top: 3px; font-weight: 700; font-size: 18px; }
+    .actions {
+      display: grid;
+      gap: 8px;
+      max-height: 280px;
       overflow: auto;
-      background: #0f172a;
-      color: #e5e7eb;
+      padding-right: 2px;
+    }
+    .action {
+      border: 1px solid #d8dee8;
+      border-radius: 7px;
+      padding: 10px;
+      background: #ffffff;
+      cursor: pointer;
+    }
+    .action.active { border-color: #175cd3; box-shadow: inset 3px 0 0 #175cd3; }
+    .action strong { display: block; font-size: 13px; margin-bottom: 5px; }
+    .action span { display: block; color: #667085; font-size: 12px; line-height: 1.35; }
+    .chat {
+      display: grid;
+      grid-template-rows: auto minmax(360px, 1fr) auto;
+      min-height: calc(100vh - 104px);
+    }
+    .chat-head {
+      border-bottom: 1px solid #d8dee8;
+      padding: 12px 14px;
+    }
+    .chat-head select {
+      width: 100%;
+      border: 1px solid #c9d3df;
+      border-radius: 6px;
+      padding: 9px;
+      background: #ffffff;
+      color: #182230;
+    }
+    .messages {
       padding: 14px;
+      overflow: auto;
+      background: #f7f9fc;
+    }
+    .msg {
+      max-width: 88%;
+      padding: 10px 11px;
       border-radius: 8px;
-      font-size: 13px;
+      margin: 0 0 10px;
+      line-height: 1.42;
+      font-size: 14px;
+      word-break: break-word;
+    }
+    .msg.bot { background: #ffffff; border: 1px solid #dde4ee; }
+    .msg.merchant { background: #dbeafe; margin-left: auto; }
+    .msg small { display: block; margin-bottom: 4px; color: #667085; font-size: 11px; }
+    .composer {
+      border-top: 1px solid #d8dee8;
+      padding: 12px;
+      background: #ffffff;
+    }
+    .quick { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+    .quick button { padding: 7px 9px; }
+    textarea {
+      width: 100%;
+      min-height: 78px;
+      resize: vertical;
+      border: 1px solid #c9d3df;
+      border-radius: 6px;
+      padding: 10px;
+      line-height: 1.45;
+    }
+    .send-row {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    pre {
+      min-height: calc(100vh - 210px);
+      overflow: auto;
+      background: #111827;
+      color: #e5e7eb;
+      padding: 13px;
+      border-radius: 8px;
+      font-size: 12px;
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+      margin: 0;
     }
     code { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
-    .hint { color: #5a6577; font-size: 13px; line-height: 1.5; margin: 12px 0 0; }
+    .muted { color: #667085; font-size: 12px; line-height: 1.45; }
+    @media (max-width: 1100px) {
+      main { grid-template-columns: 300px 1fr; }
+      .json-panel { grid-column: 1 / -1; }
+      pre { min-height: 280px; }
+    }
     @media (max-width: 760px) {
-      main { grid-template-columns: 1fr; padding: 12px; }
-      header { padding: 16px; }
-      pre { min-height: 300px; }
+      header { align-items: flex-start; flex-direction: column; padding: 15px; }
+      main { grid-template-columns: 1fr; padding: 10px; }
+      .chat { min-height: 620px; }
+      .msg { max-width: 96%; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>Vera Bot Console</h1>
-    <p class="sub">Local API tester for the magicpin challenge bot on <code>127.0.0.1:8081</code></p>
+    <div>
+      <h1>Vera Bot Console</h1>
+      <p class="sub">magicpin bot API and chat tester</p>
+    </div>
+    <div class="pill"><span id="statusDot" class="dot"></span><span id="live">Checking server</span></div>
   </header>
   <main>
-    <section>
-      <div class="status"><span class="dot"></span><span id="live">Checking server...</span></div>
-      <h2>Checks</h2>
-      <div class="buttons">
-        <button class="primary" onclick="runHealth()">GET /v1/healthz</button>
-        <button onclick="runMetadata()">GET /v1/metadata</button>
-        <button onclick="runReply()">POST /v1/reply sample</button>
+    <section class="panel">
+      <h2>Run</h2>
+      <div class="stack">
+        <button class="primary" onclick="loadDemo()">Load Demo Dataset</button>
+        <button class="success" onclick="runTick()">Run Tick</button>
+        <button onclick="runHealth()">Health</button>
+        <button onclick="runMetadata()">Metadata</button>
       </div>
-      <p class="hint">
-        The official judge uses HTTP endpoints, not a UI. This console is only for quick local checks.
-        Use <code>BOT_URL = "http://127.0.0.1:8081"</code> in <code>judge_simulator.py</code>.
-      </p>
+      <div class="stats">
+        <div class="stat"><div class="label">Categories</div><div id="catCount" class="value">0</div></div>
+        <div class="stat"><div class="label">Merchants</div><div id="merchantCount" class="value">0</div></div>
+        <div class="stat"><div class="label">Customers</div><div id="customerCount" class="value">0</div></div>
+        <div class="stat"><div class="label">Triggers</div><div id="triggerCount" class="value">0</div></div>
+      </div>
+      <h2>Tick Actions</h2>
+      <div id="actions" class="actions"></div>
+      <p class="muted">Submit the public URL for judging. This page is only a manual console.</p>
     </section>
-    <section>
-      <h2>Response</h2>
-      <pre id="output">Click a check to see the JSON response.</pre>
+
+    <section class="chat">
+      <div class="chat-head">
+        <select id="conversationSelect" onchange="selectConversation(this.value)">
+          <option value="">No conversation selected</option>
+        </select>
+      </div>
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <div class="quick">
+          <button onclick="quickReply('Yes, send it')">Yes</button>
+          <button onclick="quickReply('What is the price?')">Price?</button>
+          <button onclick="quickReply('I am busy, later')">Later</button>
+          <button onclick="quickReply('Stop messaging')">Stop</button>
+          <button onclick="quickReply('Thank you for contacting us. We will respond shortly.')">Auto</button>
+        </div>
+        <textarea id="replyText" placeholder="Type merchant reply here"></textarea>
+        <div class="send-row">
+          <button class="primary" onclick="sendReply()">Send Reply</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel json-panel">
+      <h2>JSON</h2>
+      <pre id="output">Load demo data, run tick, then reply from the chat panel.</pre>
     </section>
   </main>
   <script>
     const out = document.getElementById("output");
     const live = document.getElementById("live");
+    const statusDot = document.getElementById("statusDot");
+    const actionsEl = document.getElementById("actions");
+    const messagesEl = document.getElementById("messages");
+    const conversationSelect = document.getElementById("conversationSelect");
+    const replyText = document.getElementById("replyText");
+
+    let actions = [];
+    let conversations = {};
+    let activeConversationId = "";
 
     function show(data) {
       out.textContent = JSON.stringify(data, null, 2);
@@ -190,9 +342,170 @@ async def root():
       return data;
     }
 
+    function setCounts(counts) {
+      document.getElementById("catCount").textContent = counts.category || 0;
+      document.getElementById("merchantCount").textContent = counts.merchant || 0;
+      document.getElementById("customerCount").textContent = counts.customer || 0;
+      document.getElementById("triggerCount").textContent = counts.trigger || 0;
+    }
+
+    function addTurn(conversationId, from, msg) {
+      if (!conversations[conversationId]) conversations[conversationId] = [];
+      conversations[conversationId].push({ from, msg });
+      renderConversationList();
+      if (activeConversationId === conversationId) renderMessages();
+    }
+
+    function renderConversationList() {
+      const known = Object.keys(conversations);
+      const options = ['<option value="">No conversation selected</option>'];
+      for (const id of known) {
+        options.push(`<option value="${id}" ${id === activeConversationId ? "selected" : ""}>${id}</option>`);
+      }
+      conversationSelect.innerHTML = options.join("");
+    }
+
+    function selectConversation(id) {
+      activeConversationId = id;
+      renderActions();
+      renderConversationList();
+      renderMessages();
+    }
+
+    function renderMessages() {
+      const turns = conversations[activeConversationId] || [];
+      if (!activeConversationId) {
+        messagesEl.innerHTML = '<p class="muted">Run a tick and select an action to start chatting.</p>';
+        return;
+      }
+      messagesEl.innerHTML = turns.map((turn) => {
+        const cls = turn.from === "merchant" ? "merchant" : "bot";
+        const from = turn.from === "merchant" ? "Merchant" : "Vera";
+        return `<div class="msg ${cls}"><small>${from}</small>${escapeHtml(turn.msg || "")}</div>`;
+      }).join("");
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[ch]));
+    }
+
+    function renderActions() {
+      if (!actions.length) {
+        actionsEl.innerHTML = '<p class="muted">No tick actions yet.</p>';
+        return;
+      }
+      actionsEl.innerHTML = actions.map((action) => {
+        const active = action.conversation_id === activeConversationId ? " active" : "";
+        const body = escapeHtml((action.body || "").slice(0, 145));
+        return `<div class="action${active}" onclick="selectConversation('${action.conversation_id}')">
+          <strong>${escapeHtml(action.merchant_id || action.conversation_id)}</strong>
+          <span>${escapeHtml(action.trigger_id || "")}</span>
+          <span>${body}</span>
+        </div>`;
+      }).join("");
+    }
+
+    function importState(data) {
+      setCounts(data.contexts_loaded || {});
+      actions = data.last_actions || actions;
+      conversations = {};
+      for (const item of data.conversations || []) {
+        conversations[item.conversation_id] = item.history || [];
+      }
+      if (!activeConversationId && actions.length) {
+        activeConversationId = actions[0].conversation_id;
+      }
+      renderActions();
+      renderConversationList();
+      renderMessages();
+    }
+
+    async function refreshState() {
+      const data = await call("/ui/state");
+      importState(data);
+      return data;
+    }
+
+    async function loadDemo() {
+      try {
+        const data = await call("/ui/load-demo-data", { method: "POST" });
+        show(data);
+        await refreshState();
+      } catch (err) { show(err); }
+    }
+
+    async function runTick() {
+      try {
+        const state = await refreshState();
+        const triggerIds = (state.triggers || []).map((item) => item.id);
+        const data = await call("/v1/tick", {
+          method: "POST",
+          body: JSON.stringify({
+            now: new Date().toISOString(),
+            available_triggers: triggerIds
+          })
+        });
+        actions = data.actions || [];
+        for (const action of actions) {
+          conversations[action.conversation_id] = [{ from: "bot", msg: action.body }];
+        }
+        activeConversationId = actions[0]?.conversation_id || "";
+        renderActions();
+        renderConversationList();
+        renderMessages();
+        show(data);
+      } catch (err) { show(err); }
+    }
+
+    function quickReply(text) {
+      replyText.value = text;
+      replyText.focus();
+    }
+
+    async function sendReply() {
+      if (!activeConversationId) {
+        show({ error: "Run tick and choose a conversation first." });
+        return;
+      }
+      const message = replyText.value.trim();
+      if (!message) {
+        show({ error: "Type a merchant reply first." });
+        return;
+      }
+      const action = actions.find((item) => item.conversation_id === activeConversationId) || {};
+      addTurn(activeConversationId, "merchant", message);
+      replyText.value = "";
+      try {
+        const data = await call("/v1/reply", {
+          method: "POST",
+          body: JSON.stringify({
+            conversation_id: activeConversationId,
+            merchant_id: action.merchant_id || null,
+            customer_id: action.customer_id || null,
+            from_role: "merchant",
+            message,
+            received_at: new Date().toISOString(),
+            turn_number: (conversations[activeConversationId] || []).length
+          })
+        });
+        addTurn(activeConversationId, "bot", data.body || data.action || "");
+        show(data);
+      } catch (err) { show(err); }
+    }
+
     async function runHealth() {
-      try { show(await call("/v1/healthz")); }
-      catch (err) { show(err); }
+      try {
+        const data = await call("/v1/healthz");
+        show(data);
+        setCounts(data.contexts_loaded || {});
+      } catch (err) { show(err); }
     }
 
     async function runMetadata() {
@@ -200,30 +513,23 @@ async def root():
       catch (err) { show(err); }
     }
 
-    async function runReply() {
-      try {
-        show(await call("/v1/reply", {
-          method: "POST",
-          body: JSON.stringify({
-            conversation_id: "ui_check_reply",
-            merchant_id: "m_001_drmeera_dentist_delhi",
-            customer_id: null,
-            from_role: "merchant",
-            message: "Ok lets do it. Whats next? " + Date.now(),
-            received_at: new Date().toISOString(),
-            turn_number: 2
-          })
-        }));
-      } catch (err) { show(err); }
-    }
-
-    runHealth().then(() => { live.textContent = "Server running"; }).catch(() => {
-      live.textContent = "Server not reachable";
-    });
+    refreshState()
+      .then(() => {
+        live.textContent = "Server running";
+        statusDot.classList.add("ok");
+      })
+      .catch(() => {
+        live.textContent = "Server not reachable";
+        statusDot.classList.add("bad");
+      });
   </script>
 </body>
 </html>
-        """
+        """,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -967,17 +1273,103 @@ def generate_reply_prompt(conversation_history, latest_message, from_role):
     return "\n".join(lines + [f"Latest from {from_role}: {latest_message}"])
 
 
-@app.get("/healthz")
-@app.get("/v1/healthz")
-async def healthz():
+def _contexts_loaded_counts() -> Dict[str, int]:
     counts = {"category": 0, "merchant": 0, "customer": 0, "trigger": 0}
     for scope, _ in contexts.keys():
         if scope in counts:
             counts[scope] += 1
+    return counts
+
+
+def _demo_context_id(scope: str, payload: Dict[str, Any], fallback: str) -> str:
+    if scope == "category":
+        return str(payload.get("slug") or fallback)
+    if scope == "merchant":
+        return str(payload.get("merchant_id") or fallback)
+    if scope == "customer":
+        return str(payload.get("customer_id") or fallback)
+    if scope == "trigger":
+        return str(payload.get("id") or fallback)
+    return fallback
+
+
+def _load_demo_contexts() -> Dict[str, int]:
+    base = Path(__file__).resolve().parent / "dataset" / "expanded"
+    folders = {
+        "category": "categories",
+        "merchant": "merchants",
+        "customer": "customers",
+        "trigger": "triggers",
+    }
+    if not base.exists():
+        raise HTTPException(status_code=404, detail="dataset/expanded is missing")
+
+    loaded = {"category": 0, "merchant": 0, "customer": 0, "trigger": 0}
+    for scope, folder in folders.items():
+        source_dir = base / folder
+        if not source_dir.exists():
+            continue
+        for path in sorted(source_dir.glob("*.json")):
+            with path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            context_id = _demo_context_id(scope, payload, path.stem)
+            contexts[(scope, context_id)] = {"version": 1, "payload": payload}
+            loaded[scope] += 1
+    return loaded
+
+
+@app.get("/ui/state")
+async def ui_state():
+    triggers = []
+    for (scope, context_id), record in contexts.items():
+        if scope != "trigger":
+            continue
+        payload = record.get("payload") or {}
+        triggers.append(
+            {
+                "id": context_id,
+                "kind": payload.get("kind"),
+                "merchant_id": payload.get("merchant_id"),
+                "customer_id": payload.get("customer_id"),
+                "urgency": payload.get("urgency"),
+            }
+        )
+    triggers.sort(key=lambda item: item["id"])
+
+    return {
+        "contexts_loaded": _contexts_loaded_counts(),
+        "triggers": triggers,
+        "last_actions": last_tick_actions[-MAX_ACTIONS_PER_TICK:],
+        "conversations": [
+            {"conversation_id": conv_id, "history": history[-30:]}
+            for conv_id, history in list(conversations.items())[-30:]
+        ],
+    }
+
+
+@app.post("/ui/load-demo-data")
+async def ui_load_demo_data():
+    loaded = _load_demo_contexts()
+    sent_suppression_keys.clear()
+    conversations.clear()
+    conversation_contexts.clear()
+    ended_conversations.clear()
+    seen_messages.clear()
+    last_tick_actions.clear()
+    return {
+        "accepted": True,
+        "loaded": loaded,
+        "contexts_loaded": _contexts_loaded_counts(),
+    }
+
+
+@app.get("/healthz")
+@app.get("/v1/healthz")
+async def healthz():
     return {
         "status": "ok",
         "uptime_seconds": int(time.time() - START),
-        "contexts_loaded": counts,
+        "contexts_loaded": _contexts_loaded_counts(),
     }
 
 
@@ -1040,6 +1432,7 @@ class TickBody(BaseModel):
 @app.post("/tick")
 @app.post("/v1/tick")
 async def tick(request: Request):
+    global last_tick_actions
     body = await _parse_json_model(request, TickBody)
     actions = []
     candidates = []
@@ -1092,6 +1485,7 @@ async def tick(request: Request):
             "action": action,
         }
 
+    last_tick_actions = actions
     return {"actions": actions}
 
 
