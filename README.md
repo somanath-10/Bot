@@ -1,10 +1,10 @@
-# Vera Merchant AI Bot - Magicpin Challenge
+# Vera Merchant Bot - Magicpin Challenge
 
-This is a submission for the magicpin AI Challenge to build a merchant AI assistant, "Vera".
+This project implements a merchant engagement bot for the magicpin challenge.
 
 ## Overview
 
-This bot uses FastAPI to expose the 5 required endpoints and a deterministic local composer to produce grounded Vera messages without needing an API key.
+This bot uses FastAPI to expose the 5 required endpoints and a deterministic local composer to produce grounded Vera messages without needing an external API key.
 
 The browser UI at `/` is a manual console for local checking. It can load the expanded demo dataset, run `/v1/tick`, open generated conversations, send merchant replies to `/v1/reply`, and show the raw JSON responses.
 
@@ -72,6 +72,14 @@ Use the included `render.yaml` or `Procfile`:
 
 ```text
 uvicorn bot:app --host 0.0.0.0 --port $PORT
+```
+
+Set these environment variables on the host before final submission:
+
+```text
+TEAM_NAME=Your team name
+TEAM_MEMBERS=Your Name
+CONTACT_EMAIL=your@email.com
 ```
 
 Submit the deployed base URL, not a localhost URL.

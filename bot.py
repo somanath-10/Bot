@@ -1349,7 +1349,24 @@ async def ui_state():
 
 @app.post("/ui/load-demo-data")
 async def ui_load_demo_data():
+    contexts.clear()
+    sent_suppression_keys.clear()
+    conversations.clear()
+    conversation_contexts.clear()
+    ended_conversations.clear()
+    seen_messages.clear()
+    last_tick_actions.clear()
     loaded = _load_demo_contexts()
+    return {
+        "accepted": True,
+        "loaded": loaded,
+        "contexts_loaded": _contexts_loaded_counts(),
+    }
+
+
+@app.post("/ui/reset")
+async def ui_reset():
+    contexts.clear()
     sent_suppression_keys.clear()
     conversations.clear()
     conversation_contexts.clear()
@@ -1358,7 +1375,6 @@ async def ui_load_demo_data():
     last_tick_actions.clear()
     return {
         "accepted": True,
-        "loaded": loaded,
         "contexts_loaded": _contexts_loaded_counts(),
     }
 
@@ -1376,13 +1392,18 @@ async def healthz():
 @app.get("/metadata")
 @app.get("/v1/metadata")
 async def metadata():
+    team_members = [
+        member.strip()
+        for member in os.environ.get("TEAM_MEMBERS", "Soman").split(",")
+        if member.strip()
+    ]
     return {
-        "team_name": "Antigravity",
-        "team_members": ["AI"],
+        "team_name": os.environ.get("TEAM_NAME", "Team Soman"),
+        "team_members": team_members or ["Soman"],
         "model": "deterministic-local-composer",
-        "approach": "FastAPI stateful bot with rules/templates grounded in the 4-context dataset",
-        "contact_email": "team@example.com",
-        "version": "2.0.0",
+        "approach": "FastAPI stateful bot with ranked trigger selection and deterministic context-grounded templates",
+        "contact_email": os.environ.get("CONTACT_EMAIL", ""),
+        "version": os.environ.get("BOT_VERSION", "2.0.1"),
         "submitted_at": datetime.utcnow().isoformat() + "Z",
     }
 
