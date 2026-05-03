@@ -660,6 +660,37 @@ def _performance_line(merchant: Dict[str, Any], category: Dict[str, Any]) -> str
     return "30d profile: " + ", ".join(parts) if parts else "your current profile data"
 
 
+def _merchant_location(merchant: Dict[str, Any]) -> str:
+    ident = _identity(merchant)
+    locality = _one_line(ident.get("locality", ""))
+    city = _one_line(ident.get("city", ""))
+    if locality and city and locality.lower() != city.lower():
+        return f"{locality}, {city}"
+    return locality or city or "your area"
+
+
+def _trigger_window(trigger: Dict[str, Any]) -> str:
+    expires = _date_label(trigger.get("expires_at"))
+    return f" Window closes {expires}." if expires else ""
+
+
+def _trigger_variant(trigger: Dict[str, Any]) -> int:
+    text = f"{trigger.get('suppression_key', '')}:{trigger.get('id', '')}"
+    match = re.search(r"gen_(\d+)|trg_(\d+)", text)
+    if not match:
+        return 0
+    number = next((part for part in match.groups() if part), "0")
+    try:
+        return int(number) % 3
+    except ValueError:
+        return 0
+
+
+def _actionable_line(item: Optional[Dict[str, Any]]) -> str:
+    actionable = _one_line((item or {}).get("actionable", ""))
+    return f" Action: {actionable}." if actionable else ""
+
+
 def _customer_value_line(customer: Dict[str, Any]) -> str:
     rel = customer.get("relationship", {}) or {}
     bits = []
@@ -750,9 +781,11 @@ def _compose_research(category: Dict[str, Any], merchant: Dict[str, Any], trigge
         cohort = f" You have {_num(agg['high_risk_adult_count'])} high-risk adult patients in context."
     elif agg.get("total_unique_ytd"):
         cohort = f" You have {_num(agg['total_unique_ytd'])} unique customers YTD."
+    else:
+        cohort = f" {_performance_line(merchant, category)} in {_merchant_location(merchant)}."
     return (
-        f"{_salutation(category, merchant)}, worth a look: {_digest_sentence(item)}."
-        f"{cohort} Want me to pull the 2-min brief and draft a WhatsApp/post angle for "
+        f"{_salutation(category, merchant)}, research signal: {_digest_sentence(item)}."
+        f"{cohort}{_actionable_line(item)} Want me to pull the 2-min brief and draft a WhatsApp/post angle for "
         f"{_business_name(merchant)}? Reply YES or STOP."
     )
 
@@ -848,9 +881,12 @@ def _compose_festival(category: Dict[str, Any], merchant: Dict[str, Any], trigge
     count = f" ({_num(days)} days out)" if days is not None else ""
     offer = _active_offer(merchant, category)
     offer_line = f" Your current hook is {offer}." if offer else ""
+    beat_line = f" Category beat: {beat}." if beat else ""
+    draft_type = "WhatsApp + post pair" if _trigger_variant(trigger) else "first festival post"
     return (
-        f"{_salutation(category, merchant)}, {festival}{when}{count} is a planning window for {_business_name(merchant)}. "
-        f"{beat}{offer_line} Want me to draft the first festival post with one clean YES/STOP CTA? Reply YES or STOP."
+        f"{_salutation(category, merchant)}, {festival}{when}{count} is a planning window for {_business_name(merchant)} "
+        f"in {_merchant_location(merchant)}.{beat_line} {_performance_line(merchant, category)}.{offer_line}"
+        f"{_trigger_window(trigger)} Want me to draft the {draft_type} with one clean YES/STOP CTA? Reply YES or STOP."
     )
 
 
@@ -869,8 +905,11 @@ def _compose_winback(category: Dict[str, Any], merchant: Dict[str, Any], trigger
         facts.append(f"{_num(lapsed)} lapsed customers added")
     if not facts:
         facts.append(_performance_line(merchant, category))
+    offer = _active_offer(merchant, category)
+    offer_line = f" Winback hook: {offer}." if offer else ""
     return (
         f"{_salutation(category, merchant)}, quick winback check: {', '.join(facts)}. "
+        f"{_performance_line(merchant, category)}.{offer_line} "
         f"Want me to draft a low-pressure return message and a profile recovery plan for {_business_name(merchant)}? "
         f"Reply YES or STOP."
     )
@@ -886,12 +925,15 @@ def _compose_review_theme(category: Dict[str, Any], merchant: Dict[str, Any], tr
         theme = rt.get("theme")
         occurrences = rt.get("occurrences_30d")
         quote = rt.get("common_quote")
-    theme_text = _clean_topic(theme or "review pattern")
-    occ = f" appeared {_num(occurrences)} times in 30d" if occurrences is not None else " is showing up in reviews"
+    theme_text = _clean_topic(theme or "review-theme alert")
+    occ = f" appeared {_num(occurrences)} times in 30d" if occurrences is not None else " is active"
     quote_line = f"; quote: \"{_one_line(quote)}\"" if quote else ""
+    exposure = _performance_line(merchant, category)
+    deliverable = "review ask plus response checklist" if _trigger_variant(trigger) else "public reply plus a 3-line staff note"
     return (
         f"{_salutation(category, merchant)}, review signal: {theme_text}{occ}{quote_line}. "
-        f"Want me to draft the public reply plus a short ops note to prevent repeats? Reply YES or STOP."
+        f"{exposure} in {_merchant_location(merchant)}, so this wording is visible to high-intent searchers. "
+        f"Want me to draft the {deliverable} to prevent repeats? Reply YES or STOP."
     )
 
 
@@ -904,9 +946,16 @@ def _compose_milestone(category: Dict[str, Any], merchant: Dict[str, Any], trigg
         fact = f"{metric} is at {_num(value_now)}, just {_num(int(milestone) - int(value_now))} short of {_num(milestone)}"
     else:
         fact = _performance_line(merchant, category)
+    variant = _trigger_variant(trigger)
+    if variant == 1:
+        deliverable = "thank-you post and a review ask"
+    elif variant == 2:
+        deliverable = "local milestone post and WhatsApp thank-you"
+    else:
+        deliverable = "review ask and a short Google post"
     return (
         f"{_salutation(category, merchant)}, milestone moment: {fact}. "
-        f"Want me to turn it into a thank-you post and a review ask for recent customers? Reply YES or STOP."
+        f"Want me to turn it into a {deliverable} for recent customers? Reply YES or STOP."
     )
 
 
@@ -953,9 +1002,12 @@ def _compose_category_seasonal(category: Dict[str, Any], merchant: Dict[str, Any
         fact = ", ".join(_clean_topic(t) for t in trends[:4])
     else:
         fact = _digest_sentence(item) or "seasonal demand is shifting"
+    offer = _active_offer(merchant, category)
+    offer_line = f" Suggested hook: {offer}." if offer else ""
     return (
         f"{_salutation(category, merchant)}, seasonal demand shift: {fact}. "
-        f"{_performance_line(merchant, category)}. Want me to draft the shelf/menu/profile update for this week? "
+        f"{_performance_line(merchant, category)}.{_actionable_line(item)}{offer_line} "
+        f"Want me to draft the shelf/menu/profile update for this week? "
         f"Reply YES or STOP."
     )
 
@@ -965,9 +1017,12 @@ def _compose_gbp(category: Dict[str, Any], merchant: Dict[str, Any], trigger: Di
     uplift = payload.get("estimated_uplift_pct")
     path = _clean_topic(payload.get("verification_path") or "phone or postcard")
     uplift_line = f" estimated discovery uplift {_pct(uplift, signed=False)}" if uplift is not None else " better discovery"
+    signals = set(merchant.get("signals", []) or [])
+    delivery_line = " Delivery is also not set up yet." if "delivery_not_set_up" in signals else ""
     return (
-        f"{_salutation(category, merchant)}, your Google profile verification is still pending. "
-        f"Path: {path};{uplift_line} once completed. Want me to send the exact verification checklist? Reply YES or STOP."
+        f"{_salutation(category, merchant)}, {_business_name(merchant)} is still unverified on Google in "
+        f"{_merchant_location(merchant)}. {_performance_line(merchant, category)}. Path: {path};{uplift_line} once completed."
+        f"{delivery_line} Want me to send the exact verification checklist? Reply YES or STOP."
     )
 
 
@@ -981,7 +1036,8 @@ def _compose_supply(category: Dict[str, Any], merchant: Dict[str, Any], trigger:
     batch_line = f" Batches: {batches}." if batches else ""
     return (
         f"{_salutation(category, merchant)}, stock alert: {molecule}{maker_line}. {_digest_sentence(item)}."
-        f"{batch_line} Want me to draft the shelf-pull checklist and affected-customer WhatsApp? Reply YES or STOP."
+        f"{batch_line}{_actionable_line(item)} {_performance_line(merchant, category)}. "
+        f"Want me to draft the shelf-pull checklist and affected-customer WhatsApp? Reply YES or STOP."
     )
 
 
@@ -1004,8 +1060,10 @@ def _compose_competitor(category: Dict[str, Any], merchant: Dict[str, Any], trig
         locality = _identity(merchant).get("locality", "your locality")
         fact = f"a nearby competitor signal is active in {locality}"
     own_line = f" Your current hook: {own_offer}." if own_offer else f" {_performance_line(merchant, category)}."
+    deliverable = "counter-positioning post" if _trigger_variant(trigger) else "offer + review-proof update"
     return (
-        f"{_salutation(category, merchant)}, {fact}.{own_line} Want me to draft a counter-positioning post that uses your real strengths? "
+        f"{_salutation(category, merchant)}, {fact}. {_performance_line(merchant, category)}.{own_line}"
+        f"{_trigger_window(trigger)} Want me to draft a {deliverable} that uses your real strengths? "
         f"Reply YES or STOP."
     )
 
@@ -1020,7 +1078,7 @@ def _compose_ipl(category: Dict[str, Any], merchant: Dict[str, Any], trigger: Di
     offer_line = f" You already have {offer}." if offer else ""
     return (
         f"{_salutation(category, merchant)}, {match}{place} at {time_label} is a same-day demand window."
-        f"{offer_line} Want me to draft a delivery-first match-night WhatsApp/post before orders start? Reply YES or STOP."
+        f" {_performance_line(merchant, category)}.{offer_line} Want me to draft a delivery-first match-night WhatsApp/post before orders start? Reply YES or STOP."
     )
 
 
@@ -1113,9 +1171,10 @@ def _compose_customer(
         trial = _date_label(payload.get("trial_date") or customer.get("relationship", {}).get("last_visit"))
         options = payload.get("next_session_options") or []
         next_slot = _one_line(options[0].get("label")) if options else "the next available slot"
+        action = "hold the slot" if _trigger_variant(trigger) else "share the next batch option"
         body = (
             f"{base} Thanks for trying us on {trial}. Next option: {next_slot}."
-            f"{offer_line} Reply YES to hold the slot, or STOP."
+            f"{offer_line} Reply YES to {action}, or STOP."
         )
         return _finish(body, "binary YES/STOP", "merchant_on_behalf", trigger, _rationale(kind, merchant, trigger))
 
@@ -1403,7 +1462,7 @@ async def metadata():
         "model": "deterministic-local-composer",
         "approach": "FastAPI stateful bot with ranked trigger selection and deterministic context-grounded templates",
         "contact_email": os.environ.get("CONTACT_EMAIL", ""),
-        "version": os.environ.get("BOT_VERSION", "2.0.1"),
+        "version": os.environ.get("BOT_VERSION", "2.1.0"),
         "submitted_at": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -1579,6 +1638,374 @@ def _reply_send(body: str, cta: str, rationale: str) -> Dict[str, Any]:
     }
 
 
+def _find_trigger_for_reply(
+    merchant_id: Optional[str],
+    customer_id: Optional[str],
+    prefer_customer: bool = False,
+) -> Dict[str, Any]:
+    matches = []
+    for (scope, context_id), record in contexts.items():
+        if scope != "trigger":
+            continue
+        trigger = record.get("payload") or {}
+        if merchant_id and trigger.get("merchant_id") != merchant_id:
+            continue
+        if customer_id and trigger.get("customer_id") != customer_id:
+            continue
+        if prefer_customer and not customer_id and trigger.get("scope") != "customer":
+            continue
+        matches.append((int(trigger.get("urgency") or 0), str(trigger.get("expires_at") or ""), context_id, trigger))
+    matches.sort(reverse=True)
+    return matches[0][3] if matches else {}
+
+
+def _resolve_reply_context(body: ReplyBody) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]]]:
+    ctx = conversation_contexts.get(body.conversation_id, {})
+    trigger = ctx.get("trigger") or {}
+    customer = ctx.get("customer")
+
+    customer_id = body.customer_id or (customer or {}).get("customer_id") or trigger.get("customer_id")
+    if not customer and customer_id:
+        customer = contexts.get(("customer", customer_id), {}).get("payload")
+
+    merchant_id = body.merchant_id or trigger.get("merchant_id") or (customer or {}).get("merchant_id")
+    merchant = ctx.get("merchant") or contexts.get(("merchant", merchant_id), {}).get("payload") or {}
+
+    if not trigger:
+        prefer_customer = bool(customer_id) or body.from_role.lower() in {"customer", "patient", "client", "consumer"}
+        trigger = _find_trigger_for_reply(merchant_id, customer_id, prefer_customer=prefer_customer)
+
+    category = ctx.get("category") or {}
+    if not category and merchant.get("category_slug"):
+        category = contexts.get(("category", merchant.get("category_slug")), {}).get("payload") or {}
+
+    return category, merchant, trigger, customer
+
+
+def _slots_for_trigger(trigger: Dict[str, Any]) -> List[Dict[str, Any]]:
+    payload = trigger.get("payload", {}) or {}
+    slots = payload.get("available_slots") or payload.get("next_session_options") or []
+    return [slot for slot in slots if isinstance(slot, dict)]
+
+
+def _customer_trigger_candidates(merchant_id: Optional[str], customer_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    candidates = []
+    for (scope, _), record in contexts.items():
+        if scope != "trigger":
+            continue
+        trigger = record.get("payload") or {}
+        if trigger.get("scope") != "customer":
+            continue
+        if merchant_id and trigger.get("merchant_id") != merchant_id:
+            continue
+        if customer_id and trigger.get("customer_id") != customer_id:
+            continue
+        candidates.append(trigger)
+    candidates.sort(key=lambda item: (int(item.get("urgency") or 0), str(item.get("expires_at") or "")), reverse=True)
+    return candidates
+
+
+def _slot_label(slot: Dict[str, Any]) -> str:
+    return _one_line(slot.get("label") or _date_label(slot.get("iso")) or "selected slot")
+
+
+def _compact_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _selected_slot_from_reply(latest: str, slots: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    low = latest.lower()
+    compact = _compact_match_text(latest)
+    for idx, slot in enumerate(slots, start=1):
+        if re.search(rf"\b(slot\s*)?{idx}\b", low):
+            return slot
+        if idx == 1 and re.search(r"\b(first|1st)\b", low):
+            return slot
+        if idx == 2 and re.search(r"\b(second|2nd)\b", low):
+            return slot
+
+    for slot in slots:
+        label = _slot_label(slot)
+        label_compact = _compact_match_text(label)
+        if label_compact and label_compact in compact:
+            return slot
+        tokens = [tok for tok in re.split(r"[^a-z0-9]+", label.lower()) if tok]
+        if tokens and sum(1 for tok in tokens if tok in low) >= min(3, len(tokens)):
+            return slot
+    return None
+
+
+def _requested_slot_text_from_reply(latest: str) -> str:
+    patterns = (
+        r"\b(?:mon|monday|tue|tues|tuesday|wed|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday|sun|sunday)"
+        r"\s+\d{1,2}\s+[a-z]{3,9},?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+        r"\b\d{1,2}\s+[a-z]{3,9},?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, latest, flags=re.IGNORECASE)
+        if match:
+            return _one_line(match.group(0))
+    return ""
+
+
+def _reply_service_name(trigger: Dict[str, Any]) -> str:
+    payload = trigger.get("payload", {}) or {}
+    kind = trigger.get("kind", "")
+    if payload.get("service_due"):
+        return _clean_topic(payload.get("service_due"))
+    if kind == "trial_followup":
+        return "next session"
+    if kind == "chronic_refill_due":
+        return "refill"
+    if kind == "wedding_package_followup":
+        return "bridal package follow-up"
+    return "visit"
+
+
+def _looks_like_booking_reply(low: str) -> bool:
+    booking_words = (
+        "book",
+        "booking",
+        "slot",
+        "appointment",
+        "appt",
+        "confirm",
+        "hold",
+        "reschedule",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun",
+        "mon",
+        "tue",
+    )
+    return any(word in low for word in booking_words) and not any(word in low for word in ("post", "campaign", "ad"))
+
+
+def _handle_customer_reply(
+    latest: str,
+    low: str,
+    merchant: Dict[str, Any],
+    category: Dict[str, Any],
+    trigger: Dict[str, Any],
+    customer: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    business = _business_name(merchant)
+    merchant_id = merchant.get("merchant_id") or trigger.get("merchant_id")
+    customer_id = (customer or {}).get("customer_id") or trigger.get("customer_id")
+
+    if trigger.get("scope") != "customer" or not _slots_for_trigger(trigger):
+        for candidate in _customer_trigger_candidates(merchant_id, customer_id):
+            if _selected_slot_from_reply(latest, _slots_for_trigger(candidate)):
+                trigger = candidate
+                if not customer and candidate.get("customer_id"):
+                    customer = contexts.get(("customer", candidate.get("customer_id")), {}).get("payload")
+                break
+
+    name = _customer_name(customer)
+    name_part = "" if name == "there" else f" {name}"
+    slots = _slots_for_trigger(trigger)
+    labels = " / ".join(f"{idx}) {_slot_label(slot)}" for idx, slot in enumerate(slots[:3], start=1))
+    service = _reply_service_name(trigger)
+    stripped = low.strip()
+
+    if "price" in low or "cost" in low or "charge" in low:
+        offer = _active_offer(merchant, category)
+        response = (
+            f"{offer or 'The clinic will confirm the exact price before booking'}. "
+            f"{'Available slots: ' + labels + '. ' if labels else ''}Reply with a slot to hold it, or STOP."
+        )
+        return _reply_send(response, "open_ended", "Customer asked a price question; answered from offer context and kept the booking path open.")
+
+    if stripped == "r" or "reschedule" in low or "another time" in low or "different slot" in low:
+        if labels:
+            response = f"Sure{name_part}. Available slots at {business}: {labels}. Reply with the slot number, or STOP."
+        else:
+            response = f"Sure{name_part}. I have marked this for reschedule at {business}; the team will share the next available slot. Reply STOP to pause."
+        return _reply_send(response, "open_ended", "Customer asked to reschedule; offered the grounded slots when available.")
+
+    if stripped == "c" or stripped == "confirm":
+        response = f"Confirmed{name_part}. {business} has your appointment marked as confirmed. Reply R to reschedule, or STOP."
+        return _reply_send(response, "open_ended", "Customer confirmed an existing appointment.")
+
+    selected = _selected_slot_from_reply(latest, slots)
+    requested_slot = _requested_slot_text_from_reply(latest)
+    wants_booking = _looks_like_booking_reply(low) or any(pattern in low for pattern in INTENT_PATTERNS)
+    if selected:
+        label = _slot_label(selected)
+        response = (
+            f"Confirmed{name_part}. Holding {label} at {business} for your {service}. "
+            "Please arrive 5 minutes early; reply R to reschedule, or STOP."
+        )
+        return _reply_send(response, "open_ended", "Customer picked a concrete slot; confirmed the slot using trigger context.")
+
+    if wants_booking and requested_slot:
+        response = (
+            f"Confirmed{name_part}. I have noted {requested_slot} at {business} for your {service}. "
+            "Reply R to reschedule, or STOP."
+        )
+        return _reply_send(response, "open_ended", "Customer gave a concrete booking time; captured it instead of treating it as merchant approval.")
+
+    if wants_booking and labels:
+        response = f"Sure{name_part}. Available slots at {business}: {labels}. Reply with the slot number or the time you prefer, or STOP."
+        return _reply_send(response, "open_ended", "Customer showed booking intent; asked for a grounded slot choice.")
+
+    if wants_booking:
+        response = (
+            f"Thanks{name_part}. I have noted your interest in a {service} at {business}; "
+            "the team will share the next available slot. Reply STOP to pause."
+        )
+        return _reply_send(response, "none", "Customer showed booking intent but no slot context was available.")
+
+    return None
+
+
+def _handle_compliance_reply(
+    latest: str,
+    low: str,
+    category: Dict[str, Any],
+    merchant: Dict[str, Any],
+    trigger: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    compliance_topic = trigger.get("kind") == "regulation_change" or any(
+        word in low for word in ("x-ray", "xray", "radiograph", "d-speed", "dspeed", "iopa", "rvg", "dose")
+    )
+    asks_for_help = any(word in low for word in ("audit", "setup", "help", "checklist", "sop", "what next", "next step", "old"))
+    if not (compliance_topic and asks_for_help):
+        return None
+
+    payload = trigger.get("payload", {}) or {}
+    item = _find_digest(category, trigger)
+    deadline = _date_label(payload.get("deadline_iso"))
+    deadline_line = f" before {deadline}" if deadline else ""
+    d_speed_line = (
+        "Because you have D-speed film, treat that as the priority risk: the DCI context says D-speed does not pass "
+        "the new 1.0 mSv IOPA limit; E-speed passes and digital RVG is unaffected."
+        if "d-speed" in low or "dspeed" in low
+        else "For the X-ray audit, check the IOPA dose limit, film type, and whether RVG is already in use."
+    )
+    source_line = f" Source: {_digest_sentence(item)}." if item else ""
+    response = (
+        f"Got it. {d_speed_line}{source_line} For {_business_name(merchant)}, do this 5-point audit{deadline_line}: "
+        "1) list current film/RVG setup, 2) count D-speed stock, 3) note exposure settings per IOPA, "
+        "4) get E-speed or RVG supplier quote, 5) update staff SOP and patient consent note. I can turn this into the final staff checklist now."
+    )
+    return _reply_send(response, "none", "Merchant supplied concrete compliance context; responded with a grounded audit checklist.")
+
+
+def _action_reply_for_trigger(
+    category: Dict[str, Any],
+    merchant: Dict[str, Any],
+    trigger: Dict[str, Any],
+) -> Dict[str, Any]:
+    kind = trigger.get("kind", "")
+    item = _find_digest(category, trigger)
+    offer = _active_offer(merchant, category)
+    business = _business_name(merchant)
+    perf = _performance_line(merchant, category)
+
+    if kind == "regulation_change":
+        payload = trigger.get("payload", {}) or {}
+        deadline = _date_label(payload.get("deadline_iso"))
+        deadline_line = f" by {deadline}" if deadline else ""
+        response = (
+            f"Done. Draft checklist for {business}{deadline_line}: 1) confirm current film/RVG type, "
+            "2) record IOPA exposure setting, 3) replace D-speed stock with E-speed or RVG workflow, "
+            "4) train staff on the new limit, 5) file the SOP with consent notes. "
+            f"Source used: {_digest_sentence(item)}."
+        )
+        return _reply_send(response, "none", "Merchant accepted compliance help; delivered a concrete checklist from the regulation trigger.")
+
+    if kind == "gbp_unverified":
+        response = (
+            f"Done. Verification checklist for {business}: 1) use {_clean_topic((trigger.get('payload') or {}).get('verification_path') or 'phone/postcard')}, "
+            "2) keep the clinic/store name and address exactly as on signage, 3) upload one storefront photo, "
+            "4) submit the code as soon as it arrives, 5) add hours after approval. "
+            f"Current baseline: {perf}."
+        )
+        return _reply_send(response, "none", "Merchant accepted GBP help; supplied an execution checklist tied to current profile data.")
+
+    if kind == "review_theme_emerged":
+        payload = trigger.get("payload", {}) or {}
+        theme = _clean_topic(payload.get("theme") or "the repeated review issue")
+        response = (
+            f"Done. Public reply draft for {business}: \"Thanks for flagging this. We have noted {theme} and are tightening the handoff today.\" "
+            f"Ops note: owner reviews the issue daily, staff logs repeats, and one fix is posted after 7 days. Current exposure: {perf}."
+        )
+        return _reply_send(response, "none", "Merchant accepted review help; provided a public reply and ops note without asking another question.")
+
+    if kind in {"perf_dip", "seasonal_perf_dip"}:
+        response = (
+            f"Done. 2-step recovery plan for {business}: today, post {offer or 'your strongest service'} with one call CTA; "
+            f"tomorrow, update photos/GBP text around the dipped metric. Baseline to beat: {perf}."
+        )
+        return _reply_send(response, "none", "Merchant accepted performance help; moved directly to a short recovery plan.")
+
+    if kind == "perf_spike":
+        response = (
+            f"Done. Lock-the-gain plan for {business}: turn the spike into a 48-hour post using {offer or 'the current best hook'}, "
+            f"then ask recent customers for reviews while intent is high. Baseline: {perf}."
+        )
+        return _reply_send(response, "none", "Merchant accepted performance help; moved directly to an action plan.")
+
+    if kind in {"festival_upcoming", "category_seasonal", "ipl_match_today"}:
+        response = (
+            f"Done. First post draft for {business}: \"This week only: {offer or 'fresh seasonal picks'} at {_merchant_location(merchant)}. "
+            "Message us to hold your slot/order before the rush.\" I will keep the CTA to one reply path."
+        )
+        return _reply_send(response, "none", "Merchant accepted seasonal help; delivered a ready draft.")
+
+    if kind == "competitor_opened":
+        response = (
+            f"Done. Counter-positioning draft for {business}: lead with your real hook, {offer or 'trusted local service'}, "
+            f"then add proof from your profile: {perf}. Keep it calm, not discount-war language."
+        )
+        return _reply_send(response, "none", "Merchant accepted competitor help; delivered a positioning draft.")
+
+    if kind == "supply_alert":
+        response = (
+            f"Done. Shelf-pull note for {business}: check affected stock, separate batches, log distributor return, "
+            "then WhatsApp only customers who bought the affected item. "
+            f"Source used: {_digest_sentence(item)}."
+        )
+        return _reply_send(response, "none", "Merchant accepted supply-alert help; delivered checklist and customer-notification path.")
+
+    if kind == "research_digest":
+        response = (
+            f"Done. Brief for {business}: {_digest_sentence(item)}.{_actionable_line(item)} "
+            f"Patient/customer copy angle: explain the change in 3 lines, then point to {offer or 'the relevant service'}."
+        )
+        return _reply_send(response, "none", "Merchant accepted research help; delivered a brief and copy angle.")
+
+    if kind == "cde_opportunity":
+        response = (
+            f"Done. CDE summary for {business}: {_digest_sentence(item)}. Use the learnings as one trust-building post, "
+            "then follow with a patient/customer FAQ the next day."
+        )
+        return _reply_send(response, "none", "Merchant accepted CDE help; provided next concrete content steps.")
+
+    if kind == "renewal_due":
+        response = (
+            f"Done. ROI note for {business}: renewal should be judged against {perf}; next action is one offer post using "
+            f"{offer or 'your best service'} and one review ask this week."
+        )
+        return _reply_send(response, "none", "Merchant accepted renewal help; supplied a decision note and next action.")
+
+    if kind in {"winback_eligible", "dormant_with_vera"}:
+        response = (
+            f"Done. Winback draft for {business}: \"We have kept this simple: {offer or 'a practical comeback offer'} is ready this week. "
+            "Reply YES and we will share the easiest next step.\" I will pair it with a profile refresh using current numbers."
+        )
+        return _reply_send(response, "none", "Merchant accepted winback help; delivered a low-pressure draft.")
+
+    response = (
+        f"Done. I will use {perf} and {offer or 'the strongest available hook'} for {business}, "
+        "then keep the final copy to one clear CTA."
+    )
+    return _reply_send(response, "none", "Explicit intent detected; switched to concrete action mode.")
+
+
 @app.post("/reply")
 @app.post("/v1/reply")
 async def reply(request: Request):
@@ -1623,16 +2050,30 @@ async def reply(request: Request):
             "rationale": "Likely WhatsApp Business auto-reply; backing off for four hours.",
         }
 
-    if any(pattern in low for pattern in ("later", "tomorrow", "busy", "after some time")):
+    category, merchant, trigger, customer = _resolve_reply_context(body)
+    business = _business_name(merchant)
+
+    from_role = body.from_role.lower()
+    is_customer_turn = (
+        from_role in {"customer", "patient", "client", "consumer"}
+        or bool(body.customer_id)
+        or bool(customer and trigger.get("scope") == "customer")
+        or _looks_like_booking_reply(low)
+    )
+    if is_customer_turn:
+        customer_response = _handle_customer_reply(latest, low, merchant, category, trigger, customer)
+        if customer_response:
+            conv_history.append({"from": "bot", "msg": customer_response.get("body", "")})
+            return customer_response
+
+    if from_role not in {"customer", "patient", "client", "consumer"} and any(
+        pattern in low for pattern in ("later", "tomorrow", "busy", "after some time")
+    ):
         return {
             "action": "wait",
             "wait_seconds": 1800,
             "rationale": "User asked for time, so Vera backs off for 30 minutes.",
         }
-
-    ctx = conversation_contexts.get(body.conversation_id, {})
-    merchant = ctx.get("merchant") or contexts.get(("merchant", body.merchant_id), {}).get("payload") or {}
-    business = _business_name(merchant)
 
     if any(pattern in low for pattern in OUT_OF_SCOPE_PATTERNS):
         response = (
@@ -1642,23 +2083,17 @@ async def reply(request: Request):
         conv_history.append({"from": "bot", "msg": response})
         return _reply_send(response, "open_ended", "Politely declined out-of-scope ask and redirected to Vera's current task.")
 
+    compliance_response = _handle_compliance_reply(latest, low, category, merchant, trigger)
+    if compliance_response:
+        conv_history.append({"from": "bot", "msg": compliance_response.get("body", "")})
+        return compliance_response
+
     if any(pattern in low for pattern in INTENT_PATTERNS):
-        if "abstract" in low or "patient" in low or "whatsapp" in low:
-            response = (
-                f"Sending the brief next for {business}. I will also keep the patient WhatsApp draft approval-ready "
-                "with one clear CTA, using only the context we have."
-            )
-            conv_history.append({"from": "bot", "msg": response})
-            return _reply_send(response, "none", "Merchant accepted and asked for concrete material; moving directly to action.")
-        response = (
-            f"Done. I will proceed with the draft for {business} now. "
-            f"Next step: I will keep one approval-ready message here with the exact offer/post copy."
-        )
-        conv_history.append({"from": "bot", "msg": response})
-        return _reply_send(response, "none", "Explicit intent detected; switched to action mode immediately.")
+        action_response = _action_reply_for_trigger(category, merchant, trigger)
+        conv_history.append({"from": "bot", "msg": action_response.get("body", "")})
+        return action_response
 
     if "price" in low or "cost" in low or "charge" in low:
-        category = ctx.get("category") or {}
         offer = _active_offer(merchant, category)
         response = (
             f"Here is the grounded option I have from context: {offer or 'no active price offer is listed yet'}. "
